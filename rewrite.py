@@ -8,6 +8,27 @@ import torch
 firefox_path = "C:\\Program Files\\Mozilla Firefox\\firefox.exe" #define the Path to firefox
 webbrowser.register('firefox', None,webbrowser.BackgroundBrowser(firefox_path))
 
+def cholcov(s):
+    s = np.atleast_2d(np.asarray(s))
+    if s.ndim == (0 or 1):
+        n, m = [np.size(s),1]
+    else: 
+        n,m = np.size(s,0), np.size(s, 1)
+    if n==m:
+        s = torch.Tensor(s)
+        try:
+            T = torch.linalg.cholesky(s, upper=True).numpy()
+        except:
+            U, D = np.linalg.eig((s+s.H)/2)
+            maxind = U.index(max(U,))
+            # does this matter?
+    else:
+        T = np.zeros(0, like=s)
+        p = np.nan(like=s)
+    
+    return T.flatten()
+
+
 def prior(s):
     q = np.size(s["x"])
     if s["x"].ndim == 1: 
@@ -31,7 +52,7 @@ def normaliseWeight(theta, Wp, N):
     
     Wpnorm = Wp/sum(Wp)
     if sum(Wpnorm)==0:
-        Wpnorm = np.ones(N,1)/N
+        Wpnorm = np.ones(N,)/N
     
     return Wpnorm
 
@@ -43,8 +64,6 @@ def Pasquil_Gaussian_Plume(s, p):
     t = s["cii"]
 
     lmbda = np.sqrt(np.asarray(((D*t)/(1+(s["u"]**2)*t/(4*D)))))
-
-    dogcheck = s["x"]
 
     module_dist = np.sqrt(((s['x'] - x))**2+((s["y"]-y))**2+((s["z"]-z))**2)
     angazimuth = np.arctan2((x-s["x"]),(y-s["y"]))
@@ -96,17 +115,17 @@ def resampleSystematic(w, N=None):
     M = len(w)
     w = w/sum(w)
     Q = np.cumsum(w)
-    indx = np.zeros(1, N)
-    T = np.linspace(0, 1-1/N,N)+np.random.rand/N
+    indx = np.zeros((N,))
+    T = (np.linspace(0, 1-1/N,N)+np.random.rand(1, N)/N).flatten()
     
     i = j = 0
-    while i <=N and j <= M:
+    while i < N and j < M:
         while Q[j] < T[i]:
             j += 1
         indx[i] = j
         i += 1
 
-    return indx
+    return indx.astype(int)
 
 def resampleParticles(theta, Wpnorm, N):
     indx = resampleSystematic(Wpnorm)
@@ -122,27 +141,28 @@ def resampleParticles(theta, Wpnorm, N):
     CovQ = np.cov(theta["Q"])
     
     dk = {
-        "x": np.linalg.cholesky(Covx),
-        "y": np.linalg.cholesky(Covy),
-        "Q": np.linalg.cholesky(CovQ),
+        "x": cholcov(Covx),
+        "y": cholcov(Covy),
+        "Q": cholcov(CovQ),
     }
 
     mm = 3 
     A=(4/(mm+2))**(1/(mm+4))
     cx = 4*np.pi/3
-    hopt = A(N**(-1/(mm+4)))
+    hopt = A*(N**(-1/(mm+4)))
 
     return theta, dk, hopt
 
 def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_store,PF_Memory):
     keep = []
-    for zz in range(0):
+    for zz in range(1):
         keep = []
+        check = (hopt*dk["x"]*np.random.normal(size=(N,)))
         n = {
-            "x": theta["x"] + (hopt*dk["x"]*np.random.normal(N,1)),
-            "y": theta["y"] + (hopt*dk["y"]*np.random.normal(N,1)),
+            "x": theta["x"] + (hopt*dk["x"]*np.random.normal(size=(N,))),
+            "y": theta["y"] + (hopt*dk["y"]*np.random.normal(size=(N,))),
             "z": theta["z"],
-            "Q": theta["Q"] + (hopt*dk["Q"]*np.random.normal(N,1)),
+            "Q": theta["Q"] + (hopt*dk["Q"]*np.random.normal(size=(N,))),
             "u": theta["u"],
             "phi": theta["phi"],
             "ci": theta["ci"],
@@ -151,7 +171,7 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
         for loop in range(1):
             pri = prior(n)
             numPri = len(pri)
-            n["x"][pri] = theta["x"] + (hopt*dk["x"]*np.random.normal(numPri,1))
+            n["x"][pri]  = theta["x"] + (hopt*dk["x"]*np.random.normal(numPri,1))
             n["y"][pri] = theta["y"] + (hopt*dk["y"]*np.random.normal(numPri,1))
             n["z"][pri] = theta["z"] 
             n["Q"][pri] = theta["Q"] + (hopt*dk["Q"]*np.random.normal(numPri,1))
@@ -179,6 +199,8 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
             nC = Pasquil_Gaussian_Plume(n,pos)
 
             nWp = Likelihood_Like_Yee(nC, D, Wpnorm, thresh)
+
+            nWpnorm = normaliseWeight(n,nWp,N)
         else:
             for mem in range(PF_Memory):
                 ind = np.ceil(np.random.rand*r(1))
@@ -189,6 +211,8 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
                 nC = Pasquil_Gaussian_Plume(n, pos)
 
                 nWp = Likelihood_Like_Yee(n, nWp, N)
+
+                nWpnorm = normaliseWeight(n,nWp,N)
 
     alpha = nWpnorm/(Wpnorm) # (Wpnorm(indx))
     mcrand = np.random.rand(N,1)
@@ -204,7 +228,7 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
     theta["ci"][keep] = n["ci"][keep]
     theta["cii"][keep] = n["ci"][keep]
 
-    Wpnorm = np.ones(N,1)/N
+    Wpnorm = np.ones(N,)/N
 
     return theta
 
@@ -227,7 +251,7 @@ def UpdatePFPlume( D_k_store, theta, Wpnorm, pos, P_k_Store, thresh, N, PF_Memor
         indx = resampleSystematic(Wpnorm)
         theta, dk, hopt = resampleParticles(theta, Wpnorm, N)
         theta = mcmcResampleStep_Memory(theta, Wpnorm, N, D_k_store, thresh, dk, hopt, pos, P_k_Store, PF_Memory)
-        Wpnorm = np.ones(N,1)/N
+        Wpnorm = np.ones(N,)/N
     
     return theta, Wpnorm
 
@@ -312,8 +336,8 @@ StartingPosition = [2,2,4] # Starting position [x,y,z]
 moveDist = 2 # How far to move
 
 x, y, z = StartingPosition # Current position
-P_k_store = []
-P_k_store.append(StartingPosition)
+P_k_store = np.array([])
+P_k_store = np.append(P_k_store, StartingPosition)
 
 pos = {
     "x_matrix": x,
@@ -330,20 +354,6 @@ height = 1
 
 concSurf = conc[:,:,height]/s["Q"]
 concSurf[concSurf <= thresh] = float('nan')
-
-fig = go.Figure(data=go.Volume(
-    x=ex["x_matrix"].flatten(),
-    y=ex["y_matrix"].flatten(),
-    z=ex["z_matrix"].flatten(),
-    value=conc.flatten(),
-    isomin=thresh,
-    isomax=0.1,
-    opacity=0.5, # needs to be small to see through all surfaces
-    surface_count=100, # needs to be a large number for good volume rendering
-    ))
-fig.add_scatter3d(x=[s["x"]], y=[s["y"]], z=[s["z"]],opacity=1, marker=dict(color='black',size=5))
-fig.add_scatter3d(x=[x], y=[y], z=[z],opacity=1,marker=dict(color='red',size=5, symbol='x'))
-fig.show(renderer='firefox')
 
 # Initialize PF
 N = 20000 # 20000
@@ -366,9 +376,6 @@ theta = {
     "ci": s["ci"]*np.ones((N,)),
     "cii":s["cii"]*np.ones((N,))
 }
-
-hist = px.histogram(theta["Q"])
-hist.show(renderer='firefox')
 
 # Wp refers to particle weights
 Wp = np.ones((N,))
@@ -404,7 +411,7 @@ for i in range(100):
     theta, Wpnorm = UpdatePFPlume(D, theta, Wpnorm, pos, P_k_store, thresh, N, PF_Memory, domain)
 
     RMSE_hist.append(np.sqrt(np.mean(np.linalg.norm(np.asarray([theta["x"],theta["y"]]).conj().T-np.asarray([s["x"],s["y"]]).conj().T, axis=1).conj().T**2)))
-
+    """
     fig = go.Figure(data=go.Volume(
     x=ex["x_matrix"].flatten(),
     y=ex["y_matrix"].flatten(),
@@ -419,6 +426,7 @@ for i in range(100):
     fig.add_scatter3d(x=[s["x"]], y=[s["y"]], z=[s["z"]],opacity=1, marker=dict(color='black',size=5))
     fig.add_scatter3d(x=[x], y=[y], z=[z],opacity=1,marker=dict(color='red',size=5, symbol='x'))
     fig.show(renderer='firefox')
+    """
 
     indx = resampleStratified(Wpnorm)
     t = {
@@ -426,9 +434,9 @@ for i in range(100):
         "y": theta["y"][indx]
     }
     
-    Xneighbour = np.zeros((5,))
-    Yneighbour = np.zeros((5,))
-    Zneighbour = np.zeros((5,))
+    Xneighbour = np.zeros((8,))
+    Yneighbour = np.zeros((8,))
+    Zneighbour = np.zeros((8,))
 
     # All proposed sensor locations are right, up, left, for 1 step, 2 step, & 3 step
     ynew = [moveDist,moveDist,0,-moveDist,-moveDist,-moveDist,0,moveDist]
@@ -483,7 +491,6 @@ for i in range(100):
         designd[designd<thresh]=0
         for jj in range(M):
             for jjj in range(MM):
-                dog = np.shape(desC)
                 if designd.ndim == 1:
                     dC = designd[jj]
                 else:
@@ -492,11 +499,12 @@ for i in range(100):
                 zWp = Likelihood_Like_Yee(pC, dC, Wpnorm, thresh)
                 zWpnorm = zWp/sum(zWp)
 
-                theta_mean_xy = np.asarray(N*[np.mean(theta["x"]*zWpnorm),np.mean(theta["y"]*zWpnorm)])
+
+                theta_mean_xy = N*np.asarray([np.mean(theta["x"]*zWpnorm),np.mean(theta["y"]*zWpnorm)])
                 theta_RMSE[k] = theta_RMSE[k] + np.sum(zWpnorm*np.linalg.norm(np.asarray([theta["x"],theta["y"]]).conj().T-theta_mean_xy.conj().T, axis=1).conj().T**2)/(M*MM) # Dimension issue, resume here
                 dist_theta[k] = dist_theta[k] + np.linalg.norm(theta_mean_xy-[Xneighbour[k],Yneighbour[k]])/(M*MM)
 
-        var[k] = dist_theta[k]+theta_RMSE[k]
+        var.append(dist_theta[k]+theta_RMSE[k])
     
     val, ind = np.min(var), np.argmin(var)
     val2, ind2 = np.min(theta_RMSE), np.argmin(theta_RMSE)
@@ -507,18 +515,18 @@ for i in range(100):
     pos["y_matrix"] = Yneighbour[ind]
     pos["z_matrix"] = Zneighbour[ind]
 
-    P_k = [pos["x_matrix"], pos["y_matrix"], pos["z_matrix"]]
+    P_k = np.asarray([pos["x_matrix"], pos["y_matrix"], pos["z_matrix"]])
     sampleHistory.append(P_k)
 
-    move_time = np.floor(np.linalg.norm(P_k-P_k_store[i,:])/UAVVel)+sampleTime
+    move_time = np.floor(np.linalg.norm(P_k-P_k_store[i])/UAVVel)+sampleTime
     bLim=bLim-move_time
     if bLim <= 0:
         break
-    timestamp[i+1] = timestamp[i]+move_time
-    P_k_store.append(P_k)
+    timestamp.append(timestamp[i]+move_time)
+    P_k_store = np.append(P_k_store, P_k)
 
     Covar = np.cov(theta["x"],theta["y"])
-    Spread = np.sqrt(Covar[1,1]+Covar[2,2])
+    Spread = np.sqrt(Covar[0,0]+Covar[1,1])
 
     if Spread<0:
         break
