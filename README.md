@@ -16,4 +16,4 @@ __Histogram of generated Gamma Distribution__
 
 _Graphs generated using the Plotly Python library_
 
-The steps of the project following complete translation are to integrate other concentration curves than the Gaussian Plume (e.g. generating a point-source radioactive emitter), as well as general improvements to path-length and other parameters of the algorithm.
+The steps of the project following complete translation are to ensure correct operation regarding a point-source radioactive emitter, develop documentation, as well as general improvements to path-length and other parameters of the algorithm.

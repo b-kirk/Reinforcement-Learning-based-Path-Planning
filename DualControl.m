@@ -130,8 +130,6 @@ for i = 1:100
     thetaPrev=theta;
     [theta, Wpnorm]=UpdatePFPlume(D, theta, Wpnorm, pos,P_k_store,m,N,PF_Memory,domain);
     
-    dog = vecnorm([theta.x,theta.y]'-[s.x,s.y]')
-    
     RMSE_hist(i)=sqrt(mean(vecnorm([theta.x,theta.y]'-[s.x,s.y]')'.^2));
     
     figure(1)

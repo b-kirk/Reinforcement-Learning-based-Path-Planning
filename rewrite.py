@@ -10,10 +10,7 @@ webbrowser.register('firefox', None,webbrowser.BackgroundBrowser(firefox_path))
 
 def cholcov(s):
     s = np.atleast_2d(np.asarray(s))
-    if s.ndim == (0 or 1):
-        n, m = [np.size(s),1]
-    else: 
-        n,m = np.size(s,0), np.size(s, 1)
+    n,m = np.size(s,0), np.size(s, 1)
     if n==m:
         s = torch.Tensor(s)
         try:
@@ -21,7 +18,7 @@ def cholcov(s):
         except:
             U, D = np.linalg.eig((s+s.H)/2)
             maxind = U.index(max(U,))
-            # does this matter?
+            # Must account for non-positive-definite
     else:
         T = np.zeros(0, like=s)
         p = np.nan(like=s)
@@ -74,8 +71,14 @@ def Pasquil_Gaussian_Plume(s, p):
     ang_diff_azimuth[ang_diff_azimuth < 0] = ang_diff_azimuth[ang_diff_azimuth < 0]+2*PI
     xr = module_dist * np.cos(ang_diff_azimuth)
 
+    # ----- Chemical Sources
+
     # C = s["Q"]/(4*np.pi*D*module_dist)*np.exp(1*(xr)*s["u"]/(2*D)+(-1*module_dist/lmbda)) # This may have /0 issues?
     C = s["Q"]/(4*PI*D*module_dist)*np.exp(-module_dist/lmbda)*np.exp(-(x-s["x"])*s["u"]*np.cos(s["phi"])/2*D)*np.exp(-(y-s["y"])*s["u"]*np.sin(s["phi"])/2*D)
+
+    # ----- Radioactive Sources
+
+    # C = 1/(4*PI*module_dist**2)
 
     return C
 
@@ -157,7 +160,6 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
     keep = []
     for zz in range(1):
         keep = []
-        check = (hopt*dk["x"]*np.random.normal(size=(N,)))
         n = {
             "x": theta["x"] + (hopt*dk["x"]*np.random.normal(size=(N,))),
             "y": theta["y"] + (hopt*dk["y"]*np.random.normal(size=(N,))),
@@ -168,18 +170,19 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
             "ci": theta["ci"],
             "cii": theta["cii"]
         }
-        for loop in range(1):
-            pri = prior(n)
+        for loop in range(2):
+            pri = prior(n).flatten()
             numPri = len(pri)
-            n["x"][pri]  = theta["x"] + (hopt*dk["x"]*np.random.normal(numPri,1))
-            n["y"][pri] = theta["y"] + (hopt*dk["y"]*np.random.normal(numPri,1))
-            n["z"][pri] = theta["z"] 
-            n["Q"][pri] = theta["Q"] + (hopt*dk["Q"]*np.random.normal(numPri,1))
-            n["u"][pri] = theta["u"] 
-            n["phi"][pri] = theta["phi"] 
-            n["ci"][pri] = theta["ci"]
-            n["cii"][pri] = theta["cii"]  
-        pri = prior(n)
+            for index, item in enumerate(pri):
+                n["x"][item]  = theta["x"][item] + (hopt*dk["x"]*np.random.normal())
+                n["y"][item] = theta["y"][item] + (hopt*dk["y"]*np.random.normal())
+                n["z"][item] = theta["z"][item] 
+                n["Q"][item] = theta["Q"][item] + (hopt*dk["Q"]*np.random.normal())
+                n["u"][item] = theta["u"][item] 
+                n["phi"][item] = theta["phi"][item] 
+                n["ci"][item] = theta["ci"][item]
+                n["cii"][item] = theta["cii"][item]  
+        pri = prior(n).flatten()
         n["x"][pri] = theta["x"][pri]
         n["y"][pri] = theta["y"][pri]
         n["z"][pri] = theta["z"][pri] 
@@ -190,8 +193,10 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
         n["cii"][pri] = theta["cii"][pri]
 
         nWpnorm = Wpnorm
-        r = np.size(D_k_store)
-        if PF_Memory==1 or len(P_k_store[0,:]) == 1:
+        r = np.atleast_2d(D_k_store).reshape(-1,1)
+        r = np.asarray([np.size(r,0), np.size(r, 1)])
+        npP_k_store = np.asarray(P_k_store)
+        if PF_Memory==1 or len(npP_k_store[0,:]) == 1:
             pos["X"] = P_k_store[-1, 0]
             pos["Y"] = P_k_store[-1, 1]
             D = D_k_store[-1]
@@ -203,28 +208,28 @@ def mcmcResampleStep_Memory(theta,Wpnorm,N, D_k_store,thresh, dk, hopt,pos,P_k_s
             nWpnorm = normaliseWeight(n,nWp,N)
         else:
             for mem in range(PF_Memory):
-                ind = np.ceil(np.random.rand*r(1))
-                pos["X"] = P_k_store[ind, 0]
-                pos["Y"] = P_k_store[ind, 1]
+                ind = int(np.ceil(np.random.rand()*(r[0]-1)))
+                pos["X"] = npP_k_store[ind, 0]
+                pos["Y"] = npP_k_store[ind, 1]
                 D = D_k_store[ind]
 
                 nC = Pasquil_Gaussian_Plume(n, pos)
 
-                nWp = Likelihood_Like_Yee(n, nWp, N)
+                nWp = Likelihood_Like_Yee(nC, D, nWpnorm, thresh)
 
                 nWpnorm = normaliseWeight(n,nWp,N)
 
     alpha = nWpnorm/(Wpnorm) # (Wpnorm(indx))
     mcrand = np.random.rand(N,1)
     keep = np.argwhere(alpha > mcrand)
-    notkeep = np.argwhere(alpha < np.random.rand)
+    notkeep = np.argwhere((alpha < np.random.rand()))
 
     theta["x"][keep] = n["x"][keep]
     theta["y"][keep] = n["y"][keep]
     theta["z"][keep] = n["z"][keep]
     theta["Q"][keep] = n["Q"][keep]
     theta["u"][keep] = n["u"][keep]
-    theta["phi"][keep] = n["[phi]"][keep]
+    theta["phi"][keep] = n["phi"][keep]
     theta["ci"][keep] = n["ci"][keep]
     theta["cii"][keep] = n["ci"][keep]
 
@@ -247,7 +252,7 @@ def UpdatePFPlume( D_k_store, theta, Wpnorm, pos, P_k_Store, thresh, N, PF_Memor
     Wpnorm = normaliseWeight(theta, Wp, N)
     Neff = 1/sum(Wpnorm**2)
 
-    if Neff < 0.9*N : # For low release rate of sensing area
+    if Neff < 0.95*N : # For low release rate of sensing area
         indx = resampleSystematic(Wpnorm)
         theta, dk, hopt = resampleParticles(theta, Wpnorm, N)
         theta = mcmcResampleStep_Memory(theta, Wpnorm, N, D_k_store, thresh, dk, hopt, pos, P_k_Store, PF_Memory)
@@ -310,7 +315,7 @@ thresh = 5e-4
 # Create rectangular domain area
 xmin = 0
 xmax = 50
-ymin = -50
+ymin = 0
 ymax = 50
 zmin = 0
 zmax = 50
@@ -324,7 +329,7 @@ y_coord = np.arange(ymin,ymax+stepsize,stepsize)
 z_coord = np.arange(zmin,zmax+stepsize,stepsize)
 
 # Create 3D Grid
-X, Y, Z = np.meshgrid(x_coord,y_coord,z_coord,) # major issues with torch.meshgrid means it cannot be used here, no matter indexing
+X, Y, Z = np.meshgrid(x_coord,y_coord,z_coord,) # Issues with torch.meshgrid means it cannot be used here, no matter indexing
 
 ex = {
     "x_matrix": X,
@@ -332,12 +337,12 @@ ex = {
     "z_matrix": Z
 }
 
-StartingPosition = [2,2,4] # Starting position [x,y,z]
+StartingPosition = [2.0,2.0,0.0] # Starting position [x,y,z]
 moveDist = 2 # How far to move
 
 x, y, z = StartingPosition # Current position
-P_k_store = np.array([])
-P_k_store = np.append(P_k_store, StartingPosition)
+P_k_store = []
+P_k_store.append(StartingPosition)
 
 pos = {
     "x_matrix": x,
@@ -356,7 +361,7 @@ concSurf = conc[:,:,height]/s["Q"]
 concSurf[concSurf <= thresh] = float('nan')
 
 # Initialize PF
-N = 20000 # 20000
+N = 10000 # 10000
 PF_Memory = 10
 resample = 0
 
@@ -404,29 +409,30 @@ for i in range(100):
 
 
     if np.random.rand(1,1) < 0.3:
-        Dsim = 0
+        Dsim = np.asarray(0)
     
     D.append(Dsim)
     thetaPrev=theta
     theta, Wpnorm = UpdatePFPlume(D, theta, Wpnorm, pos, P_k_store, thresh, N, PF_Memory, domain)
 
     RMSE_hist.append(np.sqrt(np.mean(np.linalg.norm(np.asarray([theta["x"],theta["y"]]).conj().T-np.asarray([s["x"],s["y"]]).conj().T, axis=1).conj().T**2)))
-    """
-    fig = go.Figure(data=go.Volume(
-    x=ex["x_matrix"].flatten(),
-    y=ex["y_matrix"].flatten(),
-    z=ex["z_matrix"].flatten(),
-    value=conc.flatten(),
-    isomin=thresh,
-    isomax=0.1,
-    opacity=0.5, # needs to be small to see through all surfaces
-    surface_count=100, # needs to be a large number for good volume rendering
-    ))
-    fig.add_scatter3d(x=theta["x"], y=theta["y"], z=theta["z"],opacity=1, marker=dict(color='green',size=2), mode='markers')
-    fig.add_scatter3d(x=[s["x"]], y=[s["y"]], z=[s["z"]],opacity=1, marker=dict(color='black',size=5))
-    fig.add_scatter3d(x=[x], y=[y], z=[z],opacity=1,marker=dict(color='red',size=5, symbol='x'))
-    fig.show(renderer='firefox')
-    """
+
+    if i % 10 == 0:
+        fig = go.Figure(data=go.Volume(
+        x=ex["x_matrix"].flatten(),
+        y=ex["y_matrix"].flatten(),
+        z=ex["z_matrix"].flatten(),
+        value=conc.flatten(),
+        isomin=thresh,
+        isomax=0.1,
+        opacity=0.5, # needs to be small to see through all surfaces
+        surface_count=100, # needs to be a large number for good volume rendering
+        ))
+        fig.add_scatter3d(x=theta["x"], y=theta["y"], z=theta["z"],opacity=1, marker=dict(color='green',size=2), mode='markers')
+        fig.add_scatter3d(x=[s["x"]], y=[s["y"]], z=[s["z"]],opacity=1, marker=dict(color='black',size=5))
+        fig.add_scatter3d(x=np.asarray(sampleHistory)[:,0], y=np.asarray(sampleHistory)[:,1], z=np.asarray(sampleHistory)[:,2],opacity=1,marker=dict(color='red',size=5, symbol='x'))
+        fig.show(renderer='firefox')
+
 
     indx = resampleStratified(Wpnorm)
     t = {
@@ -463,15 +469,16 @@ for i in range(100):
     var = []
     theta_RMSE = []
     dist_theta = []
-    for k in range(8):
+    for k in range(0, 7):
         Xneighbour[k] = pos["x_matrix"]+xnew[k]
         Yneighbour[k] = pos["y_matrix"]+ynew[k]
         Zneighbour[k] = pos["z_matrix"]+znew[k]
 
         if (Xneighbour[k] < xmin) or (Xneighbour[k] > xmax) or (Yneighbour[k] < ymin) or (Yneighbour[k] > ymax) or (Zneighbour[k] < zmin) or (Zneighbour[k] > zmax):
-            var[k] = None
-            dist_theta[k] = None
-            theta_RMSE[k] = None
+            var.append(0) # None
+            dist_theta.append(0)
+            theta_RMSE.append(0)
+            continue
         
         npos = {
             "x_matrix": Xneighbour[k],
@@ -501,7 +508,7 @@ for i in range(100):
 
 
                 theta_mean_xy = N*np.asarray([np.mean(theta["x"]*zWpnorm),np.mean(theta["y"]*zWpnorm)])
-                theta_RMSE[k] = theta_RMSE[k] + np.sum(zWpnorm*np.linalg.norm(np.asarray([theta["x"],theta["y"]]).conj().T-theta_mean_xy.conj().T, axis=1).conj().T**2)/(M*MM) # Dimension issue, resume here
+                theta_RMSE[k] = theta_RMSE[k] + np.sum(zWpnorm*np.linalg.norm(np.asarray([theta["x"],theta["y"]]).conj().T-theta_mean_xy.conj().T, axis=1).conj().T**2)/(M*MM) # Dimension issue
                 dist_theta[k] = dist_theta[k] + np.linalg.norm(theta_mean_xy-[Xneighbour[k],Yneighbour[k]])/(M*MM)
 
         var.append(dist_theta[k]+theta_RMSE[k])
@@ -515,15 +522,15 @@ for i in range(100):
     pos["y_matrix"] = Yneighbour[ind]
     pos["z_matrix"] = Zneighbour[ind]
 
-    P_k = np.asarray([pos["x_matrix"], pos["y_matrix"], pos["z_matrix"]])
+    P_k = [pos["x_matrix"], pos["y_matrix"], pos["z_matrix"]]
     sampleHistory.append(P_k)
 
-    move_time = np.floor(np.linalg.norm(P_k-P_k_store[i])/UAVVel)+sampleTime
+    move_time = np.floor(np.linalg.norm(np.asarray(P_k)-np.asarray(P_k_store[i]))/UAVVel)+sampleTime
     bLim=bLim-move_time
     if bLim <= 0:
         break
     timestamp.append(timestamp[i]+move_time)
-    P_k_store = np.append(P_k_store, P_k)
+    P_k_store.append(P_k)
 
     Covar = np.cov(theta["x"],theta["y"])
     Spread = np.sqrt(Covar[0,0]+Covar[1,1])
